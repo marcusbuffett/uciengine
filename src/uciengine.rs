@@ -46,6 +46,7 @@ pub struct GoJob {
     pondermiss: bool,
     /// result sender
     rtx: Option<oneshot::Sender<GoResult>>,
+    should_go: bool,
 }
 
 /// time control ( all values are in milliseconds )
@@ -90,6 +91,7 @@ impl GoJob {
             ponder: false,
             ponderhit: false,
             pondermiss: false,
+            should_go: false,
         }
     }
 
@@ -154,17 +156,22 @@ impl GoJob {
             commands.push(pos_command);
         }
 
-        let mut go_command = "go".to_string();
+        if (self.should_go) {
+            let mut go_command = "go".to_string();
 
-        for (key, value) in &self.go_options {
-            go_command = go_command + &format!(" {} {}", key, value);
+            for (key, value) in &self.go_options {
+                go_command = go_command + &format!(" {} {}", key, value);
+            }
+
+            if self.ponder {
+                go_command = go_command + &format!(" {}", "ponder");
+            }
+
+            commands.push(go_command);
+
+        } else {
+            commands.push("isready".to_string());
         }
-
-        if self.ponder {
-            go_command = go_command + &format!(" {}", "ponder");
-        }
-
-        commands.push(go_command);
 
         commands
     }
@@ -254,6 +261,7 @@ impl GoJob {
         K: core::fmt::Display,
         V: core::fmt::Display,
     {
+        self.should_go = true;
         self.go_options
             .insert(format!("{}", key), format!("{}", value));
 
@@ -284,6 +292,7 @@ pub struct GoResult {
     pub ponder: Option<String>,
     /// analysis info
     pub ai: AnalysisInfo,
+    pub is_ready: bool,
 }
 
 /// uci engine
@@ -341,6 +350,7 @@ impl UciEngine {
         });
 
         let ai = std::sync::Arc::new(std::sync::Mutex::new(AnalysisInfo::new()));
+        let is_ready = std::sync::Arc::new(std::sync::Mutex::new(false));
 
         let ai_clone = ai.clone();
 
@@ -371,6 +381,7 @@ impl UciEngine {
                             }
 
                             let mut is_bestmove = line.len() >= 8;
+                            let mut is_ready = line == "readyok";
 
                             if is_bestmove {
                                 is_bestmove = &line[0..8] == "bestmove";
@@ -410,7 +421,7 @@ impl UciEngine {
                                 }
                             }
 
-                            if is_bestmove {
+                            if is_bestmove || is_ready {
                                 let send_result = tx.send(line);
 
                                 if log_enabled!(Level::Debug) {
@@ -444,12 +455,14 @@ impl UciEngine {
         let (gtx, grx) = mpsc::unbounded_channel::<GoJob>();
 
         let ai_clone = ai.clone();
+        let is_ready_clone = is_ready.clone();
 
         tokio::spawn(async move {
             let mut stdin = stdin;
             let mut grx = grx;
             let mut rx = rx;
             let ai = ai_clone;
+            let is_ready = is_ready_clone;
 
             while let Some(go_job) = grx.recv().await {
                 if log_enabled!(Level::Debug) {
@@ -493,10 +506,19 @@ impl UciEngine {
                         send_ai = *ai;
                     }
 
+                    let send_is_ready: bool;
+
+                    {
+                        let is_ready = is_ready.lock().unwrap();
+
+                        send_is_ready = *is_ready;
+                    }
+
                     let mut go_result = GoResult {
                         bestmove: None,
                         ponder: None,
                         ai: send_ai,
+                        is_ready: false,
                     };
 
                     if parts.len() > 1 {
@@ -536,6 +558,23 @@ impl UciEngine {
 
     /// issue go command
     pub fn go(&self, go_job: GoJob) -> oneshot::Receiver<GoResult> {
+        let mut go_job = go_job;
+
+        let (rtx, rrx): (oneshot::Sender<GoResult>, oneshot::Receiver<GoResult>) =
+            oneshot::channel();
+
+        go_job.rtx = Some(rtx);
+
+        let send_result = self.gtx.send(go_job);
+
+        if log_enabled!(Level::Debug) {
+            debug!("send go job result {:?}", send_result);
+        }
+
+        rrx
+    }
+
+    pub fn check_ready(&self, go_job: GoJob) -> oneshot::Receiver<GoResult> {
         let mut go_job = go_job;
 
         let (rtx, rrx): (oneshot::Sender<GoResult>, oneshot::Receiver<GoResult>) =
