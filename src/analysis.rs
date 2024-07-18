@@ -319,6 +319,7 @@ pub struct AnalysisInfo {
     pub cpuload: usize,
     /// score type
     pub scoretype: ScoreType,
+    pub wdl: WDL,
 }
 
 /// analysis info serde
@@ -346,6 +347,7 @@ pub struct AnalysisInfoSerde {
     pub multipv: usize,
     /// score ( centipawns or mate )
     pub score: Score,
+    pub wdl: WDL,
     /// current move
     pub currmove: Option<String>,
     /// current move number
@@ -362,6 +364,13 @@ pub struct AnalysisInfoSerde {
     pub scoretype: ScoreType,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+pub struct WDL {
+    pub win: u64,
+    pub draw: u64,
+    pub loss: u64,
+}
+
 /// parsing state
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -376,6 +385,9 @@ pub enum ParsingState {
     Nodes,
     Multipv,
     Score,
+    WdlW,
+    WdlD,
+    WdlL,
     ScoreCp,
     ScoreMate,
     Currmove,
@@ -411,6 +423,11 @@ impl AnalysisInfo {
             tbhits: 0,
             cpuload: 0,
             scoretype: ScoreType::Exact,
+            wdl: WDL {
+                win: 0,
+                draw: 0,
+                loss: 0,
+            },
         }
     }
 
@@ -435,6 +452,7 @@ impl AnalysisInfo {
             tbhits: self.tbhits,
             cpuload: self.cpuload,
             scoretype: self.scoretype,
+            wdl: self.wdl,
         }
     }
 
@@ -458,6 +476,7 @@ impl AnalysisInfo {
             tbhits: ais.tbhits,
             cpuload: ais.cpuload,
             scoretype: ais.scoretype,
+            wdl: ais.wdl,
         }
     }
 
@@ -537,6 +556,7 @@ impl AnalysisInfo {
                         "nodes" => ParsingState::Nodes,
                         "multipv" => ParsingState::Multipv,
                         "score" => ParsingState::Score,
+                        "wdl" => ParsingState::WdlW,
                         "currmove" => ParsingState::Currmove,
                         "currmovenumber" => ParsingState::Currmovenumber,
                         "hashfull" => ParsingState::Hashfull,
@@ -589,6 +609,26 @@ impl AnalysisInfo {
                         },
                         ParsingState::Time => match token.parse::<usize>() {
                             Ok(time) => self.time = time,
+                            _ => return parse_number_error(ps, token),
+                        },
+                        ParsingState::WdlW => {
+                            match token.parse::<u64>() {
+                                Ok(x) => self.wdl.win = x,
+                                _ => return parse_number_error(ps, token),
+                            }
+                            ps = ParsingState::WdlD;
+                            keep_state = true;
+                        }
+                        ParsingState::WdlD => {
+                            match token.parse::<u64>() {
+                                Ok(x) => self.wdl.draw = x,
+                                _ => return parse_number_error(ps, token),
+                            }
+                            ps = ParsingState::WdlL;
+                            keep_state = true;
+                        }
+                        ParsingState::WdlL => match token.parse::<u64>() {
+                            Ok(x) => self.wdl.loss = x,
                             _ => return parse_number_error(ps, token),
                         },
                         ParsingState::Nodes => match token.parse::<u64>() {
